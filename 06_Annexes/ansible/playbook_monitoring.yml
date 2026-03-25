@@ -1,0 +1,494 @@
+---
+################################################################################
+# PLAYBOOK ANSIBLE - DÉPLOIEMENT MONITORING (ZABBIX/PROMETHEUS)
+################################################################################
+# Usage: ansible-playbook -i inventory.ini playbook_monitoring.yml
+# Description: Automatise l'installation et la configuration du monitoring
+#              pour le projet Mini SOC (Zabbix ou Prometheus + Grafana)
+################################################################################
+
+- name: Déploiement Stack Monitoring - Mini SOC
+  hosts: monitoring
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # ===== CHOIX DE LA STACK =====
+    # Options: "prometheus" ou "zabbix"
+    monitoring_stack: "prometheus"
+    
+    # ===== VARIABLES PROMETHEUS =====
+    prometheus_version: "2.45.0"
+    prometheus_port: 9090
+    prometheus_retention: "30d"
+    
+    # ===== VARIABLES NODE EXPORTER =====
+    node_exporter_version: "1.6.1"
+    node_exporter_port: 9100
+    
+    # ===== VARIABLES GRAFANA =====
+    grafana_port: 3000
+    grafana_admin_password: "ChangeMe123!"  # ⚠️ MODIFIER
+    
+    # ===== VARIABLES ZABBIX (si utilisé) =====
+    zabbix_version: "6.4"
+    zabbix_server_port: 10051
+    zabbix_agent_port: 10050
+    
+    # ===== TARGETS À MONITORER =====
+    targets:
+      - { hostname: "web-server", ip: "192.168.100.10" }
+      - { hostname: "soc-server", ip: "192.168.100.20" }
+      - { hostname: "monitoring", ip: "192.168.100.30" }
+
+  tasks:
+    
+    ##########################################################################
+    # SECTION 1: PRÉPARATION SYSTÈME
+    ##########################################################################
+    
+    - name: "[SYSTEM] Mise à jour paquets"
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      tags: ['system', 'update']
+    
+    - name: "[SYSTEM] Installation dépendances"
+      dnf:
+        name:
+          - wget
+          - curl
+          - tar
+          - firewalld
+          - policycoreutils-python-utils
+        state: present
+      tags: ['system']
+    
+    ##########################################################################
+    # SECTION 2: INSTALLATION PROMETHEUS (si sélectionné)
+    ##########################################################################
+    
+    - name: "[PROMETHEUS] Créer utilisateur prometheus"
+      user:
+        name: prometheus
+        system: yes
+        shell: /bin/false
+        home: /var/lib/prometheus
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus']
+    
+    - name: "[PROMETHEUS] Créer répertoires"
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+        mode: '0755'
+      loop:
+        - /etc/prometheus
+        - /var/lib/prometheus
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus']
+    
+    - name: "[PROMETHEUS] Télécharger Prometheus"
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: /tmp/prometheus.tar.gz
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus']
+    
+    - name: "[PROMETHEUS] Extraire Prometheus"
+      unarchive:
+        src: /tmp/prometheus.tar.gz
+        dest: /tmp/
+        remote_src: yes
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus']
+    
+    - name: "[PROMETHEUS] Copier binaires"
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        remote_src: yes
+        owner: prometheus
+        group: prometheus
+        mode: '0755'
+      loop:
+        - prometheus
+        - promtool
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus']
+    
+    - name: "[PROMETHEUS] Configuration prometheus.yml"
+      copy:
+        dest: /etc/prometheus/prometheus.yml
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+            external_labels:
+              cluster: 'mini-soc'
+              environment: 'lab'
+          
+          alerting:
+            alertmanagers:
+              - static_configs:
+                - targets: []
+          
+          rule_files:
+            - "alert_rules.yml"
+          
+          scrape_configs:
+            # Prometheus lui-même
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:{{ prometheus_port }}']
+            
+            # Node Exporters sur tous les serveurs
+            - job_name: 'node-exporters'
+              static_configs:
+                - targets:
+          {% for target in targets %}
+                  - '{{ target.ip }}:{{ node_exporter_port }}'
+          {% endfor %}
+              relabel_configs:
+                - source_labels: [__address__]
+                  regex: '(.+):.*'
+                  target_label: instance
+                  replacement: '$1'
+            
+            # Monitoring spécifique services
+            - job_name: 'nginx'
+              static_configs:
+                - targets: ['192.168.100.10:9113']  # nginx-exporter
+              
+            - job_name: 'wazuh'
+              static_configs:
+                - targets: ['192.168.100.20:9000']   # wazuh-exporter (custom)
+        owner: prometheus
+        group: prometheus
+        mode: '0644'
+      when: monitoring_stack == "prometheus"
+      notify: restart prometheus
+      tags: ['prometheus', 'config']
+    
+    - name: "[PROMETHEUS] Règles d'alertes"
+      copy:
+        dest: /etc/prometheus/alert_rules.yml
+        content: |
+          groups:
+            - name: mini_soc_alerts
+              interval: 30s
+              rules:
+                # Serveur down
+                - alert: InstanceDown
+                  expr: up == 0
+                  for: 1m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Instance {{ $labels.instance }} est DOWN"
+                    description: "{{ $labels.instance }} n'a pas répondu depuis 1 minute"
+                
+                # CPU élevé
+                - alert: HighCPU
+                  expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "CPU élevé sur {{ $labels.instance }}"
+                    description: "CPU à {{ $value }}% sur {{ $labels.instance }}"
+                
+                # RAM faible
+                - alert: LowMemory
+                  expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "Mémoire faible sur {{ $labels.instance }}"
+                    description: "Seulement {{ $value }}% de RAM disponible"
+                
+                # Disque plein
+                - alert: DiskFull
+                  expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+                  for: 5m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Disque presque plein sur {{ $labels.instance }}"
+                    description: "Seulement {{ $value }}% d'espace disque disponible"
+        owner: prometheus
+        group: prometheus
+        mode: '0644'
+      when: monitoring_stack == "prometheus"
+      notify: restart prometheus
+      tags: ['prometheus', 'config', 'alerts']
+    
+    - name: "[PROMETHEUS] Créer service systemd"
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description=Prometheus Monitoring
+          Wants=network-online.target
+          After=network-online.target
+          
+          [Service]
+          User=prometheus
+          Group=prometheus
+          Type=simple
+          ExecStart=/usr/local/bin/prometheus \
+            --config.file=/etc/prometheus/prometheus.yml \
+            --storage.tsdb.path=/var/lib/prometheus/ \
+            --storage.tsdb.retention.time={{ prometheus_retention }} \
+            --web.console.templates=/etc/prometheus/consoles \
+            --web.console.libraries=/etc/prometheus/console_libraries \
+            --web.listen-address=0.0.0.0:{{ prometheus_port }}
+          
+          Restart=on-failure
+          RestartSec=5s
+          
+          [Install]
+          WantedBy=multi-user.target
+      when: monitoring_stack == "prometheus"
+      notify: restart prometheus
+      tags: ['prometheus', 'service']
+    
+    - name: "[PROMETHEUS] Activer et démarrer Prometheus"
+      systemd:
+        name: prometheus
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      when: monitoring_stack == "prometheus"
+      tags: ['prometheus', 'service']
+    
+    ##########################################################################
+    # SECTION 3: INSTALLATION NODE EXPORTER
+    ##########################################################################
+    
+    - name: "[NODE_EXPORTER] Télécharger Node Exporter"
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+      tags: ['node_exporter']
+    
+    - name: "[NODE_EXPORTER] Extraire Node Exporter"
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp/
+        remote_src: yes
+      tags: ['node_exporter']
+    
+    - name: "[NODE_EXPORTER] Copier binaire"
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        remote_src: yes
+        mode: '0755'
+      tags: ['node_exporter']
+    
+    - name: "[NODE_EXPORTER] Créer service systemd"
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          Wants=network-online.target
+          After=network-online.target
+          
+          [Service]
+          User=nobody
+          Group=nobody
+          Type=simple
+          ExecStart=/usr/local/bin/node_exporter \
+            --web.listen-address=:{{ node_exporter_port }}
+          
+          Restart=on-failure
+          RestartSec=5s
+          
+          [Install]
+          WantedBy=multi-user.target
+      notify: restart node_exporter
+      tags: ['node_exporter', 'service']
+    
+    - name: "[NODE_EXPORTER] Activer et démarrer Node Exporter"
+      systemd:
+        name: node_exporter
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      tags: ['node_exporter', 'service']
+    
+    ##########################################################################
+    # SECTION 4: INSTALLATION GRAFANA
+    ##########################################################################
+    
+    - name: "[GRAFANA] Ajouter repository Grafana"
+      copy:
+        dest: /etc/yum.repos.d/grafana.repo
+        content: |
+          [grafana]
+          name=grafana
+          baseurl=https://packages.grafana.com/oss/rpm
+          repo_gpgcheck=1
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://packages.grafana.com/gpg.key
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+      tags: ['grafana']
+    
+    - name: "[GRAFANA] Installer Grafana"
+      dnf:
+        name: grafana
+        state: present
+      tags: ['grafana']
+    
+    - name: "[GRAFANA] Configuration Grafana"
+      lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^;?http_port = ', line: 'http_port = {{ grafana_port }}' }
+        - { regexp: '^;?domain = ', line: 'domain = localhost' }
+        - { regexp: '^;?root_url = ', line: 'root_url = http://localhost:{{ grafana_port }}/' }
+      notify: restart grafana
+      tags: ['grafana', 'config']
+    
+    - name: "[GRAFANA] Activer et démarrer Grafana"
+      systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+      tags: ['grafana', 'service']
+    
+    - name: "[GRAFANA] Attendre que Grafana démarre"
+      wait_for:
+        port: "{{ grafana_port }}"
+        delay: 5
+        timeout: 60
+      tags: ['grafana']
+    
+    - name: "[GRAFANA] Ajouter datasource Prometheus"
+      uri:
+        url: "http://localhost:{{ grafana_port }}/api/datasources"
+        method: POST
+        user: admin
+        password: admin
+        force_basic_auth: yes
+        body_format: json
+        body:
+          name: "Prometheus"
+          type: "prometheus"
+          url: "http://localhost:{{ prometheus_port }}"
+          access: "proxy"
+          isDefault: true
+        status_code: [200, 409]
+      when: monitoring_stack == "prometheus"
+      tags: ['grafana', 'datasource']
+    
+    ##########################################################################
+    # SECTION 5: FIREWALL
+    ##########################################################################
+    
+    - name: "[FIREWALL] Ouvrir ports monitoring"
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+      loop:
+        - "{{ prometheus_port }}"
+        - "{{ node_exporter_port }}"
+        - "{{ grafana_port }}"
+      notify: reload firewalld
+      tags: ['firewall']
+    
+    ##########################################################################
+    # SECTION 6: SELINUX
+    ##########################################################################
+    
+    - name: "[SELINUX] Permettre Prometheus sur port custom"
+      seport:
+        ports: "{{ prometheus_port }}"
+        proto: tcp
+        setype: http_port_t
+        state: present
+      when: monitoring_stack == "prometheus"
+      tags: ['selinux']
+    
+    - name: "[SELINUX] Permettre Grafana sur port custom"
+      seport:
+        ports: "{{ grafana_port }}"
+        proto: tcp
+        setype: http_port_t
+        state: present
+      tags: ['selinux']
+
+  ##############################################################################
+  # HANDLERS
+  ##############################################################################
+  
+  handlers:
+    - name: restart prometheus
+      systemd:
+        name: prometheus
+        state: restarted
+    
+    - name: restart node_exporter
+      systemd:
+        name: node_exporter
+        state: restarted
+    
+    - name: restart grafana
+      systemd:
+        name: grafana-server
+        state: restarted
+    
+    - name: reload firewalld
+      command: firewall-cmd --reload
+
+################################################################################
+# POST-INSTALLATION GRAFANA DASHBOARDS
+################################################################################
+#
+# Dashboards recommandés à importer dans Grafana:
+# 
+# 1. Node Exporter Full (ID: 1860)
+#    Monitoring complet serveur Linux
+# 
+# 2. Prometheus Stats (ID: 2)
+#    Statistiques Prometheus lui-même
+# 
+# 3. Nginx Metrics (ID: 11199)
+#    Si serveur web Nginx
+# 
+# Pour importer:
+#   1. Se connecter à Grafana: http://IP:3000 (admin/admin)
+#   2. Dashboards → Import → Entrer ID
+#   3. Sélectionner datasource Prometheus
+# 
+################################################################################
+# VÉRIFICATIONS POST-DÉPLOIEMENT
+################################################################################
+#
+# 1. Vérifier Prometheus:
+#    curl http://localhost:9090/metrics
+#    curl http://localhost:9090/api/v1/targets
+# 
+# 2. Vérifier Node Exporter:
+#    curl http://localhost:9100/metrics
+# 
+# 3. Vérifier Grafana:
+#    http://IP_SERVEUR:3000
+#    Login: admin / admin
+# 
+# 4. Test requête Prometheus:
+#    curl 'http://localhost:9090/api/v1/query?query=up'
+# 
+################################################################################

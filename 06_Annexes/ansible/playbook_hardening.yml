@@ -1,0 +1,471 @@
+---
+################################################################################
+# PLAYBOOK ANSIBLE - HARDENING AUTOMATISÉ ROCKY LINUX
+################################################################################
+# Usage: ansible-playbook -i inventory.ini playbook_hardening.yml
+# Description: Automatise le hardening d'un serveur Rocky Linux selon les
+#              meilleures pratiques de sécurité du projet Mini SOC
+################################################################################
+
+- name: Hardening Complet Rocky Linux - Mini SOC
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # ===== VARIABLES À PERSONNALISER =====
+    ssh_port: 2222
+    ssh_allowed_users:
+      - admin-soc
+      - analyst-soc
+      - monitor-soc
+    admin_users:
+      - name: admin-soc
+        ssh_key: "ssh-rsa AAAAB3... votre_cle_publique_ici"
+      - name: analyst-soc
+        ssh_key: "ssh-rsa AAAAB3... votre_cle_publique_ici"
+      - name: monitor-soc
+        ssh_key: "ssh-rsa AAAAB3... votre_cle_publique_ici"
+    
+    # Ports à ouvrir dans firewalld (adapter selon rôle)
+    firewall_allowed_ports:
+      - "{{ ssh_port }}/tcp"
+      - "80/tcp"      # HTTP (si serveur web)
+      - "443/tcp"     # HTTPS (si serveur web)
+    
+    # Timezone
+    timezone: "Europe/Paris"
+
+  tasks:
+    
+    ##########################################################################
+    # SECTION 1: MISE À JOUR SYSTÈME
+    ##########################################################################
+    
+    - name: "[SYSTEM] Mise à jour complète du système"
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      tags: ['system', 'update']
+    
+    - name: "[SYSTEM] Installation paquets essentiels"
+      dnf:
+        name:
+          - vim
+          - wget
+          - curl
+          - git
+          - htop
+          - net-tools
+          - bind-utils
+          - tmux
+          - rsync
+          - fail2ban
+          - aide         # File integrity
+          - lynis        # Security audit
+          - policycoreutils-python-utils  # SELinux tools
+        state: present
+      tags: ['system', 'packages']
+    
+    ##########################################################################
+    # SECTION 2: CONFIGURATION UTILISATEURS
+    ##########################################################################
+    
+    - name: "[USERS] Créer les comptes administrateurs"
+      user:
+        name: "{{ item.name }}"
+        shell: /bin/bash
+        groups: wheel
+        append: yes
+        state: present
+      loop: "{{ admin_users }}"
+      tags: ['users', 'accounts']
+    
+    - name: "[USERS] Créer répertoires .ssh"
+      file:
+        path: "/home/{{ item.name }}/.ssh"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: '0700'
+      loop: "{{ admin_users }}"
+      tags: ['users', 'ssh']
+    
+    - name: "[USERS] Déployer les clés SSH publiques"
+      authorized_key:
+        user: "{{ item.name }}"
+        key: "{{ item.ssh_key }}"
+        state: present
+      loop: "{{ admin_users }}"
+      tags: ['users', 'ssh']
+    
+    - name: "[USERS] Verrouiller le compte root"
+      user:
+        name: root
+        password_lock: yes
+      tags: ['users', 'root']
+    
+    ##########################################################################
+    # SECTION 3: SÉCURISATION SSH
+    ##########################################################################
+    
+    - name: "[SSH] Backup configuration SSH originale"
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: yes
+        force: no
+      tags: ['ssh', 'backup']
+    
+    - name: "[SSH] Configuration SSH sécurisée"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^#?Port ', line: 'Port {{ ssh_port }}' }
+        - { regexp: '^#?PermitRootLogin ', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PubkeyAuthentication ', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?PasswordAuthentication ', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PermitEmptyPasswords ', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?X11Forwarding ', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries ', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?ClientAliveInterval ', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax ', line: 'ClientAliveCountMax 0' }
+        - { regexp: '^#?LoginGraceTime ', line: 'LoginGraceTime 60' }
+        - { regexp: '^#?AllowTcpForwarding ', line: 'AllowTcpForwarding no' }
+        - { regexp: '^#?LogLevel ', line: 'LogLevel VERBOSE' }
+      notify: restart sshd
+      tags: ['ssh', 'config']
+    
+    - name: "[SSH] Configurer AllowUsers"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: "AllowUsers {{ ssh_allowed_users | join(' ') }}"
+        state: present
+      notify: restart sshd
+      tags: ['ssh', 'config']
+    
+    ##########################################################################
+    # SECTION 4: FIREWALL (FIREWALLD)
+    ##########################################################################
+    
+    - name: "[FIREWALL] Installer et démarrer firewalld"
+      dnf:
+        name: firewalld
+        state: present
+      tags: ['firewall']
+    
+    - name: "[FIREWALL] Activer firewalld au démarrage"
+      systemd:
+        name: firewalld
+        enabled: yes
+        state: started
+      tags: ['firewall']
+    
+    - name: "[FIREWALL] Configurer zone public par défaut"
+      command: firewall-cmd --set-default-zone=public
+      tags: ['firewall']
+    
+    - name: "[FIREWALL] Supprimer les services par défaut"
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: disabled
+      loop:
+        - dhcpv6-client
+        - cockpit
+      notify: reload firewalld
+      tags: ['firewall']
+    
+    - name: "[FIREWALL] Ouvrir ports autorisés"
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+      loop: "{{ firewall_allowed_ports }}"
+      notify: reload firewalld
+      tags: ['firewall']
+    
+    ##########################################################################
+    # SECTION 5: SELINUX
+    ##########################################################################
+    
+    - name: "[SELINUX] Vérifier que SELinux est en mode enforcing"
+      selinux:
+        policy: targeted
+        state: enforcing
+      tags: ['selinux']
+    
+    - name: "[SELINUX] Permettre SSH sur port custom"
+      seport:
+        ports: "{{ ssh_port }}"
+        proto: tcp
+        setype: ssh_port_t
+        state: present
+      when: ssh_port != 22
+      tags: ['selinux']
+    
+    ##########################################################################
+    # SECTION 6: FAIL2BAN
+    ##########################################################################
+    
+    - name: "[FAIL2BAN] Créer configuration jail.local"
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 3
+          destemail = root@localhost
+          sendername = Fail2Ban
+          action = %(action_mwl)s
+          
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          logpath = /var/log/secure
+          maxretry = 3
+          bantime = 3600
+          
+          [nginx-http-auth]
+          enabled = true
+          port = http,https
+          logpath = /var/log/nginx/error.log
+          maxretry = 5
+      notify: restart fail2ban
+      tags: ['fail2ban']
+    
+    - name: "[FAIL2BAN] Activer fail2ban"
+      systemd:
+        name: fail2ban
+        enabled: yes
+        state: started
+      tags: ['fail2ban']
+    
+    ##########################################################################
+    # SECTION 7: AUDITD
+    ##########################################################################
+    
+    - name: "[AUDITD] Installer auditd"
+      dnf:
+        name: audit
+        state: present
+      tags: ['auditd']
+    
+    - name: "[AUDITD] Activer auditd"
+      systemd:
+        name: auditd
+        enabled: yes
+        state: started
+      tags: ['auditd']
+    
+    - name: "[AUDITD] Copier règles audit personnalisées"
+      copy:
+        src: files/auditd_rules.conf
+        dest: /etc/audit/rules.d/custom.rules
+        owner: root
+        group: root
+        mode: '0640'
+      notify: restart auditd
+      tags: ['auditd']
+    
+    ##########################################################################
+    # SECTION 8: SYSCTL (KERNEL HARDENING)
+    ##########################################################################
+    
+    - name: "[KERNEL] Configuration sysctl sécurisée"
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+      loop:
+        # Désactiver IPv6 si non utilisé
+        - { name: 'net.ipv6.conf.all.disable_ipv6', value: '1' }
+        - { name: 'net.ipv6.conf.default.disable_ipv6', value: '1' }
+        # Protection IP spoofing
+        - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        # Désactiver IP forwarding (sauf si routeur)
+        - { name: 'net.ipv4.ip_forward', value: '0' }
+        # Ignorer ICMP redirects
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        # Ignorer secure ICMP redirects
+        - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        # Désactiver ICMP redirect sending
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        # Protection SYN flood
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        # Log packets suspects
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
+        # Ignorer ping broadcasts
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        # Protection contre bad ICMP
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+      tags: ['kernel', 'sysctl']
+    
+    ##########################################################################
+    # SECTION 9: CONFIGURATION SYSTÈME
+    ##########################################################################
+    
+    - name: "[SYSTEM] Configurer timezone"
+      timezone:
+        name: "{{ timezone }}"
+      tags: ['system', 'time']
+    
+    - name: "[SYSTEM] Activer NTP"
+      systemd:
+        name: chronyd
+        enabled: yes
+        state: started
+      tags: ['system', 'time']
+    
+    - name: "[SYSTEM] Désactiver services inutiles"
+      systemd:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop:
+        - postfix     # Sauf si mail nécessaire
+        - avahi-daemon
+      ignore_errors: yes
+      tags: ['system', 'services']
+    
+    - name: "[SYSTEM] Limites fichiers ouverts"
+      pam_limits:
+        domain: '*'
+        limit_type: "{{ item.type }}"
+        limit_item: nofile
+        value: "{{ item.value }}"
+      loop:
+        - { type: 'soft', value: '65536' }
+        - { type: 'hard', value: '65536' }
+      tags: ['system', 'limits']
+    
+    ##########################################################################
+    # SECTION 10: AIDE (FILE INTEGRITY)
+    ##########################################################################
+    
+    - name: "[AIDE] Initialiser base de données AIDE"
+      command: aide --init
+      args:
+        creates: /var/lib/aide/aide.db.new.gz
+      tags: ['aide', 'integrity']
+    
+    - name: "[AIDE] Copier base AIDE"
+      copy:
+        src: /var/lib/aide/aide.db.new.gz
+        dest: /var/lib/aide/aide.db.gz
+        remote_src: yes
+        force: no
+      tags: ['aide', 'integrity']
+    
+    - name: "[AIDE] Créer cron job AIDE quotidien"
+      cron:
+        name: "AIDE Daily Check"
+        hour: "2"
+        minute: "0"
+        job: "/usr/sbin/aide --check | mail -s 'AIDE Report' root"
+        user: root
+      tags: ['aide', 'cron']
+    
+    ##########################################################################
+    # SECTION 11: BANNIÈRE LÉGALE
+    ##########################################################################
+    
+    - name: "[BANNER] Créer bannière SSH"
+      copy:
+        dest: /etc/ssh/banner.txt
+        content: |
+          ############################################################
+          #                     AVERTISSEMENT                        #
+          ############################################################
+          # Système privé - Accès réservé au personnel autorisé     #
+          # Toute tentative d'accès non autorisé sera enregistrée   #
+          # et pourra faire l'objet de poursuites judiciaires.      #
+          ############################################################
+        owner: root
+        group: root
+        mode: '0644'
+      tags: ['banner']
+    
+    - name: "[BANNER] Activer bannière SSH"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Banner '
+        line: 'Banner /etc/ssh/banner.txt'
+        state: present
+      notify: restart sshd
+      tags: ['banner']
+    
+    ##########################################################################
+    # SECTION 12: RAPPORT FINAL
+    ##########################################################################
+    
+    - name: "[REPORT] Générer rapport Lynis"
+      command: lynis audit system --quick --quiet
+      register: lynis_output
+      ignore_errors: yes
+      tags: ['report', 'audit']
+    
+    - name: "[REPORT] Afficher score Lynis"
+      debug:
+        msg: "{{ lynis_output.stdout_lines | select('search', 'Hardening index') | list }}"
+      tags: ['report', 'audit']
+
+  ##############################################################################
+  # HANDLERS
+  ##############################################################################
+  
+  handlers:
+    - name: restart sshd
+      systemd:
+        name: sshd
+        state: restarted
+    
+    - name: reload firewalld
+      command: firewall-cmd --reload
+    
+    - name: restart fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted
+    
+    - name: restart auditd
+      command: service auditd restart
+
+################################################################################
+# POST-EXÉCUTION
+################################################################################
+# 
+# Après exécution du playbook:
+# 
+# 1. VÉRIFIER SSH fonctionne sur nouveau port:
+#    ssh -p 2222 admin-soc@IP_SERVEUR
+# 
+# 2. VÉRIFIER firewall:
+#    sudo firewall-cmd --list-all
+# 
+# 3. VÉRIFIER SELinux:
+#    sudo getenforce
+#    sudo ausearch -m AVC -ts recent
+# 
+# 4. TESTER fail2ban:
+#    sudo fail2ban-client status sshd
+# 
+# 5. VÉRIFIER auditd:
+#    sudo auditctl -l
+# 
+# 6. RAPPORT Lynis complet:
+#    sudo lynis audit system --report-file /tmp/lynis-report.dat
+# 
+################################################################################

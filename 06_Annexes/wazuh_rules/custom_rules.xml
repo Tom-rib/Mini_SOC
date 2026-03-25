@@ -1,0 +1,399 @@
+<!--
+=============================================================================
+TEMPLATE - RÈGLES WAZUH PERSONNALISÉES
+=============================================================================
+Chemin: /var/ossec/etc/rules/local_rules.xml
+Usage: Template pour créer vos propres règles Wazuh
+Documentation: https://documentation.wazuh.com/current/user-manual/ruleset/
+=============================================================================
+-->
+
+<!--
+=============================================================================
+STRUCTURE DE BASE D'UNE RÈGLE WAZUH
+=============================================================================
+-->
+
+<group name="custom,local,">
+
+  <!--
+  ==========================================================================
+  EXEMPLE 1: RÈGLE SIMPLE (détection par pattern)
+  ==========================================================================
+  Détecte un pattern spécifique dans les logs
+  -->
+  <rule id="100300" level="5">
+    <match>mon_pattern_a_detecter</match>
+    <description>Description de ce qui a été détecté</description>
+    <group>categorie1,categorie2,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 2: RÈGLE AVEC PARENT (if_sid)
+  ==========================================================================
+  Se déclenche uniquement si la règle parente (5710) s'est déclenchée
+  -->
+  <rule id="100301" level="8">
+    <if_sid>5710</if_sid>
+    <match>pattern_additionnel</match>
+    <description>Détection basée sur règle parente 5710</description>
+    <group>derived_rule,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 3: RÈGLE AVEC FRÉQUENCE (détection brute force)
+  ==========================================================================
+  Se déclenche après X occurrences en Y secondes
+  -->
+  <rule id="100302" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>100300</if_matched_sid>
+    <same_source_ip />
+    <description>5 occurrences détectées en 2 minutes depuis $(src_ip)</description>
+    <group>multiple_events,brute_force_style,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 4: RÈGLE AVEC REGEX
+  ==========================================================================
+  Utilise des expressions régulières pour détecter
+  -->
+  <rule id="100303" level="7">
+    <regex>^\d{3}\.\d{3}\.\d{3}\.\d{3}</regex>
+    <description>Pattern regex détecté (ici: IP address)</description>
+    <group>regex_based,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 5: RÈGLE AVEC EXCLUSION IP
+  ==========================================================================
+  Ne se déclenche PAS pour certaines IPs
+  -->
+  <rule id="100304" level="6">
+    <if_sid>5710</if_sid>
+    <srcip>!192.168.1.0/24</srcip>
+    <description>Événement depuis IP externe (pas 192.168.1.x)</description>
+    <group>external_source,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 6: RÈGLE TEMPORELLE (horaires spécifiques)
+  ==========================================================================
+  Se déclenche uniquement pendant certaines heures
+  -->
+  <rule id="100305" level="8">
+    <match>connexion_utilisateur</match>
+    <time>22:00-06:00</time>
+    <description>Événement hors horaires normaux (22h-6h)</description>
+    <group>after_hours,suspicious_timing,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 7: RÈGLE AVEC UTILISATEUR SPÉCIFIQUE
+  ==========================================================================
+  Filtre par nom d'utilisateur
+  -->
+  <rule id="100306" level="9">
+    <if_sid>5402</if_sid>
+    <user>root</user>
+    <description>Action effectuée par l'utilisateur ROOT</description>
+    <group>root_activity,privileged_user,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 8: RÈGLE AVEC PLUSIEURS CONDITIONS (AND)
+  ==========================================================================
+  Toutes les conditions doivent être vraies
+  -->
+  <rule id="100307" level="10">
+    <if_sid>5710</if_sid>
+    <match>Failed</match>
+    <srcip>!192.168.1.0/24</srcip>
+    <time>22:00-06:00</time>
+    <description>Échec connexion: IP externe + hors horaires</description>
+    <group>high_risk,multiple_conditions,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 9: RÈGLE AVEC HOSTNAME
+  ==========================================================================
+  Filtre par nom d'hôte spécifique
+  -->
+  <rule id="100308" level="7">
+    <match>critical_event</match>
+    <hostname>production-server</hostname>
+    <description>Événement critique sur serveur de production</description>
+    <group>production,critical_system,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  EXEMPLE 10: RÈGLE AVEC PROGRAM NAME
+  ==========================================================================
+  Filtre par nom du programme/service
+  -->
+  <rule id="100309" level="6">
+    <if_sid>1002</if_sid>
+    <program_name>custom-app</program_name>
+    <description>Événement de l'application custom-app</description>
+    <group>application_specific,</group>
+  </rule>
+
+</group>
+
+<!--
+=============================================================================
+EXEMPLES DE RÈGLES PAR CAS D'USAGE
+=============================================================================
+-->
+
+<group name="custom_use_cases,">
+
+  <!--
+  ==========================================================================
+  CAS D'USAGE 1: DÉTECTION SCAN NMAP
+  ==========================================================================
+  -->
+  <rule id="100310" level="9">
+    <if_sid>5100</if_sid>
+    <match>SYN</match>
+    <description>Possible scan NMAP détecté depuis $(src_ip)</description>
+    <group>network_scan,reconnaissance,</group>
+  </rule>
+
+  <rule id="100311" level="11" frequency="10" timeframe="10">
+    <if_matched_sid>100310</if_matched_sid>
+    <same_source_ip />
+    <description>ALERTE: Scan réseau INTENSIF depuis $(src_ip) - 10+ SYN en 10s</description>
+    <group>network_scan,attack,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  CAS D'USAGE 2: CONNEXION DEPUIS GEO-IP SUSPECT
+  ==========================================================================
+  Nécessite GeoIP configuré
+  -->
+  <rule id="100312" level="10">
+    <if_sid>5715</if_sid>
+    <match>CN|RU|KP</match>
+    <description>Connexion SSH depuis pays à risque: $(geoip_country) - IP: $(src_ip)</description>
+    <group>geoip_alert,suspicious_country,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  CAS D'USAGE 3: MODIFICATION FICHIER CRITIQUE
+  ==========================================================================
+  -->
+  <rule id="100313" level="12">
+    <if_sid>550</if_sid>
+    <match>/etc/passwd|/etc/shadow|/etc/sudoers</match>
+    <description>CRITIQUE: Fichier système sensible modifié: $(file)</description>
+    <group>file_integrity,critical_file,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  CAS D'USAGE 4: PROCESSUS SUSPECT
+  ==========================================================================
+  -->
+  <rule id="100314" level="9">
+    <if_sid>533</if_sid>
+    <match>nc |ncat |socat |reverse</match>
+    <description>Processus SUSPECT démarré: $(extra_data)</description>
+    <group>suspicious_process,malware,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  CAS D'USAGE 5: ERREUR APPLICATIVE RÉPÉTÉE
+  ==========================================================================
+  -->
+  <rule id="100315" level="5">
+    <program_name>mon-app</program_name>
+    <match>ERROR|CRITICAL</match>
+    <description>Erreur dans mon-app: $(log)</description>
+    <group>application_error,</group>
+  </rule>
+
+  <rule id="100316" level="10" frequency="10" timeframe="300">
+    <if_matched_sid>100315</if_matched_sid>
+    <description>Application mon-app: 10+ erreurs en 5 minutes - Possible problème</description>
+    <group>application_error,multiple_errors,</group>
+  </rule>
+
+</group>
+
+<!--
+=============================================================================
+SYNTAXE ET OPTIONS DISPONIBLES
+=============================================================================
+
+<rule id="X" level="Y">
+
+  IDENTIFIANTS:
+  - id="100000-120000"     : ID unique (100000+ pour règles custom)
+  - level="0-15"           : Niveau de gravité (0=ignore, 15=sévère)
+  
+  CONDITIONS DE DÉCLENCHEMENT:
+  - <if_sid>XXXX</if_sid>               : Se base sur règle parente
+  - <if_matched_sid>XXXX</if_matched_sid> : Corrélation avec règle précédente
+  - <if_group>nom_groupe</if_group>     : Si groupe parent match
+  
+  PATTERNS:
+  - <match>texte</match>                : Recherche simple (case insensitive)
+  - <regex>pattern</regex>              : Expression régulière
+  - <pcre2>pattern_avance</pcre2>       : PCRE2 regex (avancé)
+  
+  FILTRES:
+  - <srcip>IP_ou_CIDR</srcip>          : Filtre par IP source (!IP pour exclure)
+  - <dstip>IP_ou_CIDR</dstip>          : Filtre par IP destination
+  - <user>nom_user</user>              : Filtre par utilisateur
+  - <program_name>app</program_name>   : Filtre par programme
+  - <hostname>host</hostname>          : Filtre par hostname
+  - <time>HH:MM-HH:MM</time>           : Filtre temporel
+  - <weekday>monday-sunday</weekday>   : Filtre par jour semaine
+  
+  FRÉQUENCE:
+  - frequency="N"                      : Nombre minimum d'occurrences
+  - timeframe="S"                      : Fenêtre temps (secondes)
+  - <same_source_ip />                 : Même IP source
+  - <same_user />                      : Même utilisateur
+  - <same_location />                  : Même agent
+  - <different_srcip />                : IPs différentes
+  
+  DESCRIPTION:
+  - <description>Texte</description>   : Description alerte
+  - Variables: $(src_ip), $(dst_ip), $(user), $(hostname), $(file), $(url), 
+               $(extra_data), $(program_name), $(log)
+  
+  GROUPES ET TAGS:
+  - <group>tag1,tag2,</group>          : Catégorisation
+  
+  OPTIONS:
+  - <options>no_email_alert</options>  : Pas d'email
+  - <options>no_log</options>          : Ne pas logger
+  - <options>alert_by_email</options>  : Forcer email
+
+  COMPLIANCE:
+  - <pci_dss>X.X</pci_dss>            : Référence PCI-DSS
+  - <gdpr>Article</gdpr>               : Référence GDPR
+  - <hipaa>Section</hipaa>             : Référence HIPAA
+  - <nist_800_53>Control</nist_800_53> : Référence NIST
+
+</rule>
+
+=============================================================================
+NIVEAUX DE GRAVITÉ (LEVELS)
+=============================================================================
+
+0  = Ignoré (utilisé pour désactiver règles)
+1  = Aucune action
+2  = Logs système (priorité basse)
+3  = Événements autorisés/réussis
+4  = Événements système (priorité basse)
+5  = Événements générés par utilisateur
+6  = Attaque de faible pertinence
+7  = Détection "bad word"
+8  = Première occurrence
+9  = Erreur depuis source invalide
+10 = Erreurs multiples utilisateur
+11 = Avertissement intégrité
+12 = Événement haute importance
+13 = Erreur inhabituelle (haute importance)
+14 = Événement sécurité haute importance
+15 = Attaque sévère
+
+RECOMMANDATIONS:
+- Utiliser 0-5 pour info/debug
+- Utiliser 6-9 pour warnings/alertes mineures
+- Utiliser 10-12 pour alertes importantes
+- Utiliser 13-15 pour critiques uniquement
+
+=============================================================================
+BONNES PRATIQUES
+=============================================================================
+
+1. NUMÉROTATION:
+   - Commencer à 100000 pour règles custom
+   - Grouper par centaines (100100-100199 = SSH, 100200-100299 = Web, etc.)
+
+2. DESCRIPTIONS:
+   - Claire et concise
+   - Inclure variables $(src_ip), $(user), etc.
+   - Indiquer action à prendre si pertinent
+
+3. GROUPES:
+   - Utiliser groupes cohérents
+   - Terminer par virgule: <group>ssh,attack,</group>
+   - Permet filtrage dans Wazuh UI
+
+4. PERFORMANCE:
+   - Éviter regex complexes (privilégier <match>)
+   - Limiter frequency rules (gourmandes)
+   - Tester impact avec wazuh-logtest
+
+5. TESTS:
+   - Utiliser /var/ossec/bin/wazuh-logtest pour tester
+   - Valider avec vrais logs avant production
+   - Monitorer faux positifs
+
+6. DOCUMENTATION:
+   - Commenter vos règles
+   - Expliquer le contexte
+   - Noter les ajustements faits
+
+=============================================================================
+COMMANDES UTILES
+=============================================================================
+
+# Tester une règle avec un log sample:
+echo "votre_log_ici" | /var/ossec/bin/wazuh-logtest
+
+# Vérifier syntaxe règles:
+/var/ossec/bin/wazuh-logtest -t
+
+# Lister toutes les règles actives:
+/var/ossec/bin/wazuh-logtest -l
+
+# Chercher une règle par ID:
+grep -r "id=\"100300\"" /var/ossec/ruleset/rules/
+
+# Voir les règles d'un groupe:
+grep -A 10 "group name=\"ssh\"" /var/ossec/ruleset/rules/*.xml
+
+# Redémarrer après modification:
+sudo systemctl restart wazuh-manager
+
+# Voir les logs Wazuh:
+sudo tail -f /var/ossec/logs/ossec.log
+
+# Voir les alertes générées:
+sudo tail -f /var/ossec/logs/alerts/alerts.json
+
+=============================================================================
+RESSOURCES
+=============================================================================
+
+Documentation officielle:
+https://documentation.wazuh.com/current/user-manual/ruleset/rules.html
+
+Règles de la communauté:
+https://github.com/wazuh/wazuh-ruleset
+
+Forum Wazuh:
+https://groups.google.com/g/wazuh
+
+Regex tester:
+https://regex101.com/
+
+=============================================================================
+-->

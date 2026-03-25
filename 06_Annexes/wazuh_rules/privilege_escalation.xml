@@ -1,0 +1,361 @@
+<!--
+=============================================================================
+RÈGLES WAZUH - DÉTECTION ÉLÉVATION DE PRIVILÈGES
+=============================================================================
+Chemin: /var/ossec/etc/rules/local_rules.xml
+Usage: Détecter les tentatives sudo non autorisées et l'élévation privilèges
+Redémarrer: sudo systemctl restart wazuh-manager
+=============================================================================
+-->
+
+<group name="privilege_escalation,sudo,policy_violation,">
+
+  <!--
+  ==========================================================================
+  RÈGLE 1: COMMANDE SUDO NON AUTORISÉE
+  ==========================================================================
+  Utilisateur tente d'exécuter une commande sudo qu'il n'a pas le droit
+  Niveau: 10 (Critique)
+  -->
+  <rule id="100101" level="10">
+    <if_sid>5401</if_sid>
+    <match>NOT permitted</match>
+    <description>Tentative sudo NON AUTORISÉE par $(user) - Commande: $(extra_data)</description>
+    <group>sudo_failed,privilege_escalation,pci_dss_10.2.2,pci_dss_10.2.5,gpg13_7.8,gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_AU.14,nist_800_53_AC.7,tsc_CC6.8,tsc_CC7.2,tsc_CC7.3,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 2: TENTATIVES SUDO RÉPÉTÉES (brute force sudo)
+  ==========================================================================
+  Un utilisateur essaie plusieurs commandes sudo rapidement
+  Niveau: 12 (Critique++)
+  -->
+  <rule id="100102" level="12" frequency="5" timeframe="120">
+    <if_matched_sid>100101</if_matched_sid>
+    <same_user />
+    <description>ALERTE: Tentatives SUDO répétées (5+) en 2 minutes par $(user) - Possible attaque privilege escalation</description>
+    <group>sudo_failed,privilege_escalation,attack,pci_dss_10.2.4,pci_dss_10.2.5,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 3: SUDO ROOT PAR USER NON AUTORISÉ
+  ==========================================================================
+  Un user qui n'est pas dans sudoers tente sudo
+  Niveau: 11
+  -->
+  <rule id="100103" level="11">
+    <if_sid>5401</if_sid>
+    <match>user NOT in sudoers</match>
+    <description>User $(user) NON DANS SUDOERS a tenté sudo - Commande: $(extra_data)</description>
+    <group>sudo_failed,privilege_escalation,policy_violation,pci_dss_10.2.2,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 4: COMMANDES SUDO SENSIBLES DÉTECTÉES
+  ==========================================================================
+  Surveillance des commandes critiques (passwd, userdel, etc.)
+  Niveau: 8
+  -->
+  <rule id="100104" level="8">
+    <if_sid>5402</if_sid>
+    <match>passwd|userdel|useradd|usermod|groupadd|groupdel|visudo</match>
+    <description>Commande SUDO SENSIBLE exécutée: $(extra_data) par $(user)</description>
+    <group>sudo_executed,sensitive_command,pci_dss_10.2.2,pci_dss_10.2.5,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 5: MODIFICATION DU FICHIER SUDOERS
+  ==========================================================================
+  Détecte les tentatives de modification de /etc/sudoers
+  Niveau: 12 (Très critique)
+  -->
+  <rule id="100105" level="12">
+    <if_sid>5402</if_sid>
+    <match>visudo|/etc/sudoers</match>
+    <description>ALERTE: Modification de /etc/sudoers par $(user) via sudo</description>
+    <group>sudo_executed,sudoers_modification,critical,pci_dss_10.2.2,gdpr_IV_35.7.d,hipaa_164.312.b,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 6: SU COMMAND (changement utilisateur)
+  ==========================================================================
+  Détecte l'utilisation de 'su' pour changer d'utilisateur
+  Niveau: 7
+  -->
+  <rule id="100106" level="7">
+    <if_sid>5402</if_sid>
+    <match>su |su -</match>
+    <description>Commande SU utilisée: $(user) tente de devenir un autre utilisateur</description>
+    <group>sudo_executed,user_switch,pci_dss_10.2.2,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 7: SUDO AVEC OPTION -i (interactive root shell)
+  ==========================================================================
+  Utilisateur ouvre un shell root interactif
+  Niveau: 9
+  -->
+  <rule id="100107" level="9">
+    <if_sid>5402</if_sid>
+    <match>sudo -i|sudo -s|sudo su</match>
+    <description>Shell ROOT interactif ouvert par $(user) via sudo -i/-s/su</description>
+    <group>sudo_executed,root_shell,high_risk,pci_dss_10.2.2,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 8: SUDO POUR ÉDITER FICHIERS SYSTÈME CRITIQUES
+  ==========================================================================
+  Détecte édition de fichiers sensibles (passwd, shadow, etc.)
+  Niveau: 10
+  -->
+  <rule id="100108" level="10">
+    <if_sid>5402</if_sid>
+    <match>/etc/passwd|/etc/shadow|/etc/group|/etc/gshadow</match>
+    <description>ALERTE: Édition de fichier système CRITIQUE par $(user) - Fichier: $(extra_data)</description>
+    <group>sudo_executed,system_file_modification,critical,pci_dss_10.2.2,pci_dss_10.2.5,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 9: SUDO POUR CHANGER PERMISSIONS (chmod 777, etc.)
+  ==========================================================================
+  Détecte les changements de permissions suspects
+  Niveau: 8
+  -->
+  <rule id="100109" level="8">
+    <if_sid>5402</if_sid>
+    <match>chmod 777|chmod 666|chmod -R 777</match>
+    <description>Permissions DANGEREUSES appliquées via sudo par $(user) - Commande: $(extra_data)</description>
+    <group>sudo_executed,dangerous_permissions,policy_violation,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 10: SUDO POUR INSTALLER PAQUETS
+  ==========================================================================
+  Surveillance installation/suppression logiciels
+  Niveau: 7
+  -->
+  <rule id="100110" level="7">
+    <if_sid>5402</if_sid>
+    <match>yum install|dnf install|rpm -i|yum remove|dnf remove</match>
+    <description>Installation/suppression de paquet via sudo: $(extra_data) par $(user)</description>
+    <group>sudo_executed,package_management,pci_dss_10.2.7,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 11: SUDO POUR MODIFIER FIREWALL
+  ==========================================================================
+  Détecte modifications des règles firewall
+  Niveau: 9
+  -->
+  <rule id="100111" level="9">
+    <if_sid>5402</if_sid>
+    <match>firewall-cmd|iptables|firewalld</match>
+    <description>Modification FIREWALL via sudo par $(user) - Commande: $(extra_data)</description>
+    <group>sudo_executed,firewall_modification,security_config_change,pci_dss_10.2.5,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 12: SUDO POUR ARRÊTER/DÉMARRER SERVICES
+  ==========================================================================
+  Surveillance des actions systemctl
+  Niveau: 6
+  -->
+  <rule id="100112" level="6">
+    <if_sid>5402</if_sid>
+    <match>systemctl stop|systemctl start|systemctl restart|systemctl disable|systemctl enable</match>
+    <description>Service système modifié via sudo: $(extra_data) par $(user)</description>
+    <group>sudo_executed,service_management,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 13: SUDO POUR CRÉER/MODIFIER CRON JOBS
+  ==========================================================================
+  Détecte les backdoors via cron
+  Niveau: 10
+  -->
+  <rule id="100113" level="10">
+    <if_sid>5402</if_sid>
+    <match>crontab|/etc/cron</match>
+    <description>ALERTE: Modification CRON via sudo par $(user) - Possible backdoor temporel</description>
+    <group>sudo_executed,cron_modification,backdoor_attempt,pci_dss_10.2.7,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 14: SUDO POUR TÉLÉCHARGER FICHIERS (wget/curl)
+  ==========================================================================
+  Download suspect de fichiers en tant que root
+  Niveau: 9
+  -->
+  <rule id="100114" level="9">
+    <if_sid>5402</if_sid>
+    <match>wget |curl |fetch </match>
+    <description>Téléchargement de fichier via SUDO par $(user) - Commande: $(extra_data)</description>
+    <group>sudo_executed,file_download,suspicious_activity,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 15: SUDO POUR MODIFIER LOGS
+  ==========================================================================
+  Tentative de modification ou suppression logs
+  Niveau: 12 (Très critique - effacement de traces)
+  -->
+  <rule id="100115" level="12">
+    <if_sid>5402</if_sid>
+    <match>/var/log|journalctl|auditd|rsyslog</match>
+    <description>CRITIQUE: Tentative modification/effacement LOGS via sudo par $(user)</description>
+    <group>sudo_executed,log_tampering,evidence_destruction,pci_dss_10.5.2,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 16: SUDO POUR MONTER FILESYSTEMS
+  ==========================================================================
+  Montage/démontage de systèmes de fichiers
+  Niveau: 7
+  -->
+  <rule id="100116" level="7">
+    <if_sid>5402</if_sid>
+    <match>mount |umount </match>
+    <description>Système de fichiers monté/démonté via sudo par $(user) - Commande: $(extra_data)</description>
+    <group>sudo_executed,filesystem_operation,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 17: SUDO APRÈS HORAIRES NORMAUX
+  ==========================================================================
+  Utilisation sudo en dehors des heures de travail
+  Niveau: 8
+  -->
+  <rule id="100117" level="8">
+    <if_sid>5402</if_sid>
+    <time>22:00-06:00</time>
+    <description>Commande SUDO exécutée HORS HORAIRES (22h-6h): $(extra_data) par $(user)</description>
+    <group>sudo_executed,after_hours,suspicious_timing,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 18: ÉCHEC AUTHENTIFICATION SUDO (mauvais password)
+  ==========================================================================
+  User entre un mauvais mot de passe pour sudo
+  Niveau: 6
+  -->
+  <rule id="100118" level="6">
+    <if_sid>5401</if_sid>
+    <match>authentication failure|incorrect password</match>
+    <description>Échec authentification SUDO: mauvais mot de passe pour $(user)</description>
+    <group>sudo_failed,authentication_failed,pci_dss_10.2.4,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 19: MULTIPLES ÉCHECS SUDO (brute force password)
+  ==========================================================================
+  Tentatives répétées avec mauvais mot de passe
+  Niveau: 10
+  -->
+  <rule id="100119" level="10" frequency="3" timeframe="60">
+    <if_matched_sid>100118</if_matched_sid>
+    <same_user />
+    <description>ALERTE: Multiples échecs SUDO (3+) en 1 minute pour $(user) - Brute force password?</description>
+    <group>sudo_failed,authentication_failed,brute_force,pci_dss_10.2.4,pci_dss_10.2.5,</group>
+  </rule>
+
+  <!--
+  ==========================================================================
+  RÈGLE 20: SUDO BASH/SH (shell scripts exécutés en root)
+  ==========================================================================
+  Exécution de scripts shell en root
+  Niveau: 7
+  -->
+  <rule id="100120" level="7">
+    <if_sid>5402</if_sid>
+    <match>bash |sh |/bin/bash|/bin/sh</match>
+    <description>Script BASH/SH exécuté en root via sudo par $(user)</description>
+    <group>sudo_executed,script_execution,</group>
+  </rule>
+
+</group>
+
+<!--
+=============================================================================
+RÉFÉRENCES WAZUH NATIVES POUR SUDO
+=============================================================================
+
+5401 = sudo: user not allowed to execute command
+5402 = sudo: successful sudo command execution
+5403 = sudo: user authentication failed
+
+Documentation Wazuh:
+https://documentation.wazuh.com/current/ruleset/rules/sudo.html
+
+=============================================================================
+INSTALLATION
+=============================================================================
+
+1. Ajouter ces règles dans /var/ossec/etc/rules/local_rules.xml
+
+2. Redémarrer Wazuh Manager:
+   sudo systemctl restart wazuh-manager
+
+3. Test manuel:
+   # Sur un agent Wazuh, tester:
+   sudo ls    # OK
+   sudo visudo # Devrait déclencher alerte niveau 12
+   sudo su -  # Devrait déclencher alerte niveau 9
+
+4. Vérifier dans Wazuh UI:
+   Dashboard > Security Events > Filter by "privilege_escalation"
+
+=============================================================================
+CORRÉLATION AVEC AUDITD
+=============================================================================
+
+Ces règles Wazuh sont complémentaires avec auditd.
+Auditd trace les appels système (execve, setuid, etc.)
+Wazuh analyse les logs applicatifs (sudo, su, etc.)
+
+Ensemble, ils offrent une couverture complète:
+- Auditd: Niveau kernel/système
+- Wazuh: Niveau applicatif/logs
+
+=============================================================================
+EXEMPLES D'ALERTES ATTENDUES
+=============================================================================
+
+Niveau 6-7  : Utilisation normale mais surveillée (su, systemctl)
+Niveau 8-9  : Commandes sensibles (chmod 777, sudo -i, firewall)
+Niveau 10-11: Tentatives non autorisées (sudo failed, user not in sudoers)
+Niveau 12+  : Critique (modification sudoers, effacement logs, brute force)
+
+=============================================================================
+TUNNING DES RÈGLES
+=============================================================================
+
+Si trop d'alertes (faux positifs):
+- Augmenter les levels: level="8" → level="10"
+- Ajouter des exclusions: <user>!admin-soc</user>
+- Ajuster timeframe: timeframe="60" → timeframe="120"
+
+Si pas assez d'alertes:
+- Diminuer les levels
+- Réduire frequency et timeframe
+- Ajouter plus de patterns dans <match>
+
+=============================================================================
+-->

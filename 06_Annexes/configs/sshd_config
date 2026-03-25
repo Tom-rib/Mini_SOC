@@ -1,0 +1,148 @@
+# =============================================================================
+# CONFIGURATION SSH SECURISEE - MINI SOC ROCKY LINUX
+# =============================================================================
+# Chemin: /etc/ssh/sshd_config
+# À adapter selon votre environnement
+# Redémarrer après modif: sudo systemctl restart sshd
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# SECTION 1: PORTS ET ADRESSES
+# -----------------------------------------------------------------------------
+
+# Port non standard pour éviter les scans automatisés
+# ⚠️ À MODIFIER: Choisir un port entre 1024-65535
+Port 2222
+
+# Écouter uniquement sur IPv4 (désactiver IPv6 si non utilisé)
+AddressFamily inet
+
+# Écouter sur toutes les interfaces (ou spécifier une IP précise)
+ListenAddress 0.0.0.0
+
+# -----------------------------------------------------------------------------
+# SECTION 2: AUTHENTIFICATION
+# -----------------------------------------------------------------------------
+
+# INTERDIT la connexion root par SSH (sécurité critique)
+PermitRootLogin no
+
+# N'autoriser QUE l'authentification par clé (pas de mot de passe)
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+
+# Désactiver les méthodes d'authentification obsolètes
+ChallengeResponseAuthentication no
+KerberosAuthentication no
+GSSAPIAuthentication no
+
+# Fichier contenant les clés publiques autorisées
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Nombre maximum de tentatives d'authentification (protection brute force)
+MaxAuthTries 3
+
+# Nombre de sessions SSH non authentifiées simultanées
+MaxStartups 3:50:10
+
+# -----------------------------------------------------------------------------
+# SECTION 3: RESTRICTIONS D'ACCÈS
+# -----------------------------------------------------------------------------
+
+# Autoriser uniquement certains utilisateurs (adapter aux noms de comptes)
+# ⚠️ À MODIFIER: Remplacer par vos noms d'utilisateurs
+AllowUsers admin-soc analyst-soc monitor-soc
+
+# OU autoriser un groupe spécifique
+# AllowGroups sshusers
+
+# Interdire explicitement certains utilisateurs
+# DenyUsers baduser
+
+# -----------------------------------------------------------------------------
+# SECTION 4: TIMEOUTS ET SESSIONS
+# -----------------------------------------------------------------------------
+
+# Déconnecter après 5 minutes d'inactivité
+ClientAliveInterval 300
+ClientAliveCountMax 0
+
+# Délai d'authentification (1 minute)
+LoginGraceTime 60
+
+# -----------------------------------------------------------------------------
+# SECTION 5: FONCTIONNALITÉS DÉSACTIVÉES
+# -----------------------------------------------------------------------------
+
+# Désactiver le transfert X11 (inutile sur serveur)
+X11Forwarding no
+
+# Désactiver les tunnels TCP
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+
+# Désactiver .rhosts (obsolète et dangereux)
+IgnoreRhosts yes
+HostbasedAuthentication no
+
+# Désactiver l'agent forwarding
+AllowAgentForwarding no
+
+# -----------------------------------------------------------------------------
+# SECTION 6: BANNIÈRE ET LOGGING
+# -----------------------------------------------------------------------------
+
+# Afficher une bannière légale avant connexion
+# Banner /etc/ssh/banner.txt
+
+# Niveau de log détaillé pour audit
+LogLevel VERBOSE
+
+# Utiliser syslog pour centraliser les logs
+SyslogFacility AUTH
+
+# -----------------------------------------------------------------------------
+# SECTION 7: CRYPTOGRAPHIE
+# -----------------------------------------------------------------------------
+
+# Algorithmes de chiffrement modernes uniquement
+Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr
+
+# Algorithmes MAC sécurisés
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Algorithmes d'échange de clés robustes
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+
+# -----------------------------------------------------------------------------
+# SECTION 8: AUTRES PARAMÈTRES
+# -----------------------------------------------------------------------------
+
+# Afficher la date de dernière connexion
+PrintLastLog yes
+
+# Ne pas afficher le MOTD (message du jour)
+PrintMotd no
+
+# Utiliser PAM (nécessaire pour certaines fonctionnalités)
+UsePAM yes
+
+# Compression après authentification (économise bande passante)
+Compression delayed
+
+# Ne pas permettre les variables d'environnement arbitraires
+PermitUserEnvironment no
+
+# Strict mode vérifie les permissions des fichiers
+StrictModes yes
+
+# =============================================================================
+# FIN DE LA CONFIGURATION
+# =============================================================================
+# Commandes de vérification:
+# sudo sshd -t           # Tester la syntaxe
+# sudo systemctl restart sshd
+# sudo systemctl status sshd
+# =============================================================================

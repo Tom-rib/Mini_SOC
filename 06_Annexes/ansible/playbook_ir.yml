@@ -1,0 +1,441 @@
+---
+################################################################################
+# PLAYBOOK ANSIBLE - INCIDENT RESPONSE (IR)
+################################################################################
+# Usage: ansible-playbook -i inventory.ini playbook_ir.yml --tags="scenario_name"
+# Description: Playbook de réponse automatisée aux incidents détectés
+#              Contient des scénarios pour différents types d'attaques
+################################################################################
+
+- name: Incident Response Playbook - Mini SOC
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # ===== CONFIGURATION GÉNÉRALE =====
+    incident_log_dir: /var/log/incident_response
+    backup_dir: /var/backup/incident_response
+    quarantine_dir: /var/quarantine
+    
+    # ===== IP ATTAQUANTE (à définir lors exécution) =====
+    attacker_ip: "{{ attacker_ip | default('0.0.0.0') }}"
+    
+    # ===== COMPTE COMPROMIS (à définir lors exécution) =====
+    compromised_user: "{{ compromised_user | default('unknown') }}"
+    
+    # ===== NOTIFICATION =====
+    alert_email: "soc-admin@example.com"
+    
+    # ===== TIMESTAMP =====
+    timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+    
+    ##########################################################################
+    # SECTION 0: PRÉPARATION
+    ##########################################################################
+    
+    - name: "[PREP] Créer répertoires IR"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ incident_log_dir }}"
+        - "{{ backup_dir }}"
+        - "{{ quarantine_dir }}"
+      tags: ['always', 'prep']
+    
+    - name: "[PREP] Log début incident response"
+      lineinfile:
+        path: "{{ incident_log_dir }}/ir_actions.log"
+        line: "{{ timestamp }} - Incident Response démarré - Tags: {{ ansible_run_tags }}"
+        create: yes
+      tags: ['always', 'prep']
+    
+    ##########################################################################
+    # SCÉNARIO 1: BRUTE FORCE SSH DÉTECTÉ
+    ##########################################################################
+    
+    - name: "[IR-SSH] Bloquer IP attaquante dans firewall"
+      firewalld:
+        source: "{{ attacker_ip }}"
+        zone: drop
+        permanent: yes
+        state: enabled
+      when: attacker_ip != "0.0.0.0"
+      notify: reload firewalld
+      tags: ['ssh_bruteforce', 'block_ip']
+    
+    - name: "[IR-SSH] Ajouter IP à fail2ban jail"
+      command: fail2ban-client set sshd banip {{ attacker_ip }}
+      when: attacker_ip != "0.0.0.0"
+      ignore_errors: yes
+      tags: ['ssh_bruteforce', 'fail2ban']
+    
+    - name: "[IR-SSH] Extraire logs SSH de l'attaquant"
+      shell: |
+        grep "{{ attacker_ip }}" /var/log/secure > {{ incident_log_dir }}/ssh_attack_{{ attacker_ip }}_{{ ansible_date_time.epoch }}.log
+      when: attacker_ip != "0.0.0.0"
+      tags: ['ssh_bruteforce', 'forensics']
+    
+    - name: "[IR-SSH] Vérifier si connexion réussie"
+      shell: |
+        grep "{{ attacker_ip }}.*Accepted" /var/log/secure
+      register: ssh_success
+      failed_when: false
+      changed_when: false
+      when: attacker_ip != "0.0.0.0"
+      tags: ['ssh_bruteforce', 'check']
+    
+    - name: "[IR-SSH] ALERTE - Connexion SSH réussie détectée"
+      debug:
+        msg: "CRITIQUE: L'IP {{ attacker_ip }} a réussi à se connecter en SSH!"
+      when: 
+        - attacker_ip != "0.0.0.0"
+        - ssh_success.stdout != ""
+      tags: ['ssh_bruteforce', 'alert']
+    
+    ##########################################################################
+    # SCÉNARIO 2: COMPTE UTILISATEUR COMPROMIS
+    ##########################################################################
+    
+    - name: "[IR-USER] Verrouiller compte compromis"
+      user:
+        name: "{{ compromised_user }}"
+        password_lock: yes
+      when: compromised_user != "unknown"
+      tags: ['user_compromise', 'lock_account']
+    
+    - name: "[IR-USER] Killer toutes sessions du compte"
+      shell: |
+        pkill -u {{ compromised_user }} || true
+        loginctl terminate-user {{ compromised_user }} || true
+      when: compromised_user != "unknown"
+      tags: ['user_compromise', 'kill_sessions']
+    
+    - name: "[IR-USER] Révoquer clés SSH"
+      file:
+        path: "/home/{{ compromised_user }}/.ssh/authorized_keys"
+        state: absent
+      when: compromised_user != "unknown"
+      tags: ['user_compromise', 'revoke_keys']
+    
+    - name: "[IR-USER] Backup du home directory"
+      archive:
+        path: "/home/{{ compromised_user }}"
+        dest: "{{ backup_dir }}/{{ compromised_user }}_{{ ansible_date_time.epoch }}.tar.gz"
+      when: compromised_user != "unknown"
+      tags: ['user_compromise', 'backup', 'forensics']
+    
+    - name: "[IR-USER] Extraire historique commandes"
+      shell: |
+        cp /home/{{ compromised_user }}/.bash_history {{ incident_log_dir }}/{{ compromised_user }}_history_{{ ansible_date_time.epoch }}.log 2>/dev/null || true
+      when: compromised_user != "unknown"
+      tags: ['user_compromise', 'forensics']
+    
+    ##########################################################################
+    # SCÉNARIO 3: WEB SHELL / FICHIER MALVEILLANT DÉTECTÉ
+    ##########################################################################
+    
+    - name: "[IR-WEB] Scanner fichiers PHP suspects dans /var/www"
+      find:
+        paths: /var/www
+        patterns: "*.php"
+        age: -1d
+        recurse: yes
+      register: recent_php_files
+      tags: ['web_shell', 'scan']
+    
+    - name: "[IR-WEB] Chercher patterns de web shells"
+      shell: |
+        grep -rl "eval\|base64_decode\|system\|passthru\|shell_exec" /var/www --include="*.php" || true
+      register: suspicious_files
+      changed_when: false
+      tags: ['web_shell', 'scan']
+    
+    - name: "[IR-WEB] Quarantaine fichiers suspects"
+      copy:
+        src: "{{ item }}"
+        dest: "{{ quarantine_dir }}/{{ item | basename }}_{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      loop: "{{ suspicious_files.stdout_lines }}"
+      when: suspicious_files.stdout_lines | length > 0
+      tags: ['web_shell', 'quarantine']
+    
+    - name: "[IR-WEB] Supprimer web shells"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ suspicious_files.stdout_lines }}"
+      when: suspicious_files.stdout_lines | length > 0
+      tags: ['web_shell', 'remove']
+    
+    - name: "[IR-WEB] Extraire logs web récents"
+      shell: |
+        tail -n 1000 /var/log/nginx/access.log > {{ incident_log_dir }}/web_access_{{ ansible_date_time.epoch }}.log
+        tail -n 1000 /var/log/nginx/error.log > {{ incident_log_dir }}/web_error_{{ ansible_date_time.epoch }}.log
+      ignore_errors: yes
+      tags: ['web_shell', 'forensics']
+    
+    ##########################################################################
+    # SCÉNARIO 4: SCAN RÉSEAU DÉTECTÉ
+    ##########################################################################
+    
+    - name: "[IR-SCAN] Bloquer IP scanner"
+      firewalld:
+        source: "{{ attacker_ip }}"
+        zone: drop
+        permanent: yes
+        state: enabled
+      when: attacker_ip != "0.0.0.0"
+      notify: reload firewalld
+      tags: ['network_scan', 'block_ip']
+    
+    - name: "[IR-SCAN] Rate limit depuis cette IP"
+      command: |
+        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="{{ attacker_ip }}" limit value="1/m" reject'
+      when: attacker_ip != "0.0.0.0"
+      notify: reload firewalld
+      tags: ['network_scan', 'rate_limit']
+    
+    - name: "[IR-SCAN] Capturer connexions actives suspectes"
+      shell: |
+        ss -tunap | grep {{ attacker_ip }} > {{ incident_log_dir }}/connections_{{ attacker_ip }}_{{ ansible_date_time.epoch }}.log || true
+      when: attacker_ip != "0.0.0.0"
+      tags: ['network_scan', 'forensics']
+    
+    ##########################################################################
+    # SCÉNARIO 5: ÉLÉVATION PRIVILÈGES / SUDO NON AUTORISÉ
+    ##########################################################################
+    
+    - name: "[IR-SUDO] Analyser tentatives sudo non autorisées"
+      shell: |
+        grep "NOT permitted\|not in sudoers" /var/log/secure > {{ incident_log_dir }}/sudo_violations_{{ ansible_date_time.epoch }}.log || true
+      tags: ['privilege_escalation', 'forensics']
+    
+    - name: "[IR-SUDO] Vérifier intégrité /etc/sudoers"
+      command: visudo -c
+      register: sudoers_check
+      failed_when: false
+      changed_when: false
+      tags: ['privilege_escalation', 'check']
+    
+    - name: "[IR-SUDO] ALERTE - sudoers modifié"
+      debug:
+        msg: "CRITIQUE: Le fichier /etc/sudoers a des erreurs de syntaxe!"
+      when: sudoers_check.rc != 0
+      tags: ['privilege_escalation', 'alert']
+    
+    - name: "[IR-SUDO] Backup /etc/sudoers"
+      copy:
+        src: /etc/sudoers
+        dest: "{{ backup_dir }}/sudoers_{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      tags: ['privilege_escalation', 'backup']
+    
+    ##########################################################################
+    # SCÉNARIO 6: PROCESSUS SUSPECT / MALWARE
+    ##########################################################################
+    
+    - name: "[IR-MALWARE] Lister processus utilisant beaucoup de CPU"
+      shell: |
+        ps aux --sort=-%cpu | head -n 20 > {{ incident_log_dir }}/top_cpu_{{ ansible_date_time.epoch }}.log
+      tags: ['malware', 'forensics']
+    
+    - name: "[IR-MALWARE] Chercher processus avec noms suspects"
+      shell: |
+        ps aux | grep -E "nc|ncat|socat|reverse|shell|backdoor|cryptominer" | grep -v grep || true
+      register: suspicious_processes
+      changed_when: false
+      tags: ['malware', 'scan']
+    
+    - name: "[IR-MALWARE] Tuer processus suspects"
+      shell: |
+        pkill -9 -f "{{ item }}"
+      loop:
+        - "nc -"
+        - "ncat -"
+        - "socat"
+        - "/tmp/.*"
+      ignore_errors: yes
+      tags: ['malware', 'kill']
+    
+    - name: "[IR-MALWARE] Scanner /tmp pour binaires suspects"
+      find:
+        paths: /tmp
+        file_type: file
+        age: -1d
+      register: tmp_files
+      tags: ['malware', 'scan']
+    
+    - name: "[IR-MALWARE] Quarantaine fichiers /tmp suspects"
+      copy:
+        src: "{{ item.path }}"
+        dest: "{{ quarantine_dir }}/{{ item.path | basename }}_{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      loop: "{{ tmp_files.files }}"
+      when: tmp_files.files | length > 0
+      tags: ['malware', 'quarantine']
+    
+    ##########################################################################
+    # SCÉNARIO 7: LOGS SUPPRIMÉS / ANTI-FORENSICS
+    ##########################################################################
+    
+    - name: "[IR-LOGS] Vérifier intégrité logs système"
+      stat:
+        path: "{{ item }}"
+      register: log_check
+      loop:
+        - /var/log/secure
+        - /var/log/messages
+        - /var/log/audit/audit.log
+      tags: ['log_tampering', 'check']
+    
+    - name: "[IR-LOGS] Backup logs critiques"
+      archive:
+        path:
+          - /var/log/secure
+          - /var/log/messages
+          - /var/log/audit/
+        dest: "{{ backup_dir }}/logs_backup_{{ ansible_date_time.epoch }}.tar.gz"
+      tags: ['log_tampering', 'backup', 'forensics']
+    
+    - name: "[IR-LOGS] Vérifier AIDE integrity"
+      command: aide --check
+      register: aide_result
+      failed_when: false
+      changed_when: false
+      tags: ['log_tampering', 'integrity']
+    
+    ##########################################################################
+    # SCÉNARIO 8: COLLECTE FORENSIQUE COMPLÈTE
+    ##########################################################################
+    
+    - name: "[FORENSICS] Collecter informations système"
+      shell: |
+        mkdir -p {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}
+        uname -a > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/uname.txt
+        ip a > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/network.txt
+        ss -tunap > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/connections.txt
+        ps auxf > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/processes.txt
+        lsof -i > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/open_ports.txt
+        last -n 50 > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/last_logins.txt
+        w > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/current_users.txt
+        crontab -l > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/root_cron.txt 2>/dev/null || true
+        ls -laR /tmp > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/tmp_listing.txt
+        find / -type f -mtime -1 2>/dev/null > {{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}/recent_files.txt
+      tags: ['forensics', 'collect']
+    
+    - name: "[FORENSICS] Créer archive complète"
+      archive:
+        path: "{{ incident_log_dir }}/forensics_{{ ansible_date_time.epoch }}"
+        dest: "{{ backup_dir }}/forensics_complete_{{ ansible_date_time.epoch }}.tar.gz"
+      tags: ['forensics', 'archive']
+    
+    ##########################################################################
+    # SCÉNARIO 9: RESTAURATION / RECOVERY
+    ##########################################################################
+    
+    - name: "[RECOVERY] Vérifier services critiques"
+      systemd:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - sshd
+        - firewalld
+        - auditd
+        - fail2ban
+      tags: ['recovery', 'services']
+    
+    - name: "[RECOVERY] Réinitialiser permissions critiques"
+      file:
+        path: "{{ item }}"
+        mode: "0600"
+      loop:
+        - /etc/shadow
+        - /etc/gshadow
+      tags: ['recovery', 'permissions']
+    
+    - name: "[RECOVERY] Réinitialiser base AIDE"
+      command: aide --init
+      tags: ['recovery', 'aide']
+    
+    ##########################################################################
+    # RAPPORT FINAL
+    ##########################################################################
+    
+    - name: "[REPORT] Générer rapport incident"
+      copy:
+        dest: "{{ incident_log_dir }}/incident_report_{{ ansible_date_time.epoch }}.txt"
+        content: |
+          ================================================================================
+          INCIDENT RESPONSE REPORT
+          ================================================================================
+          Date: {{ timestamp }}
+          Hostname: {{ ansible_hostname }}
+          IP: {{ ansible_default_ipv4.address }}
+          
+          INCIDENT DETAILS:
+          - Scenarios executed: {{ ansible_run_tags }}
+          - Attacker IP: {{ attacker_ip }}
+          - Compromised User: {{ compromised_user }}
+          
+          ACTIONS TAKEN:
+          - IP Blocked: {{ attacker_ip != '0.0.0.0' }}
+          - User Locked: {{ compromised_user != 'unknown' }}
+          - Logs Backed Up: Yes
+          - Forensics Collected: Yes
+          
+          FILES LOCATION:
+          - Incident Logs: {{ incident_log_dir }}
+          - Backups: {{ backup_dir }}
+          - Quarantine: {{ quarantine_dir }}
+          
+          NEXT STEPS:
+          1. Review forensics data in {{ backup_dir }}
+          2. Analyze logs in {{ incident_log_dir }}
+          3. Check quarantined files in {{ quarantine_dir }}
+          4. Update incident tracking system
+          5. Conduct post-incident review
+          ================================================================================
+      tags: ['always', 'report']
+    
+    - name: "[REPORT] Afficher rapport"
+      debug:
+        msg: "Incident Response terminé. Rapport: {{ incident_log_dir }}/incident_report_{{ ansible_date_time.epoch }}.txt"
+      tags: ['always', 'report']
+
+  ##############################################################################
+  # HANDLERS
+  ##############################################################################
+  
+  handlers:
+    - name: reload firewalld
+      command: firewall-cmd --reload
+
+################################################################################
+# EXEMPLES D'UTILISATION
+################################################################################
+#
+# 1. BRUTE FORCE SSH depuis 1.2.3.4:
+#    ansible-playbook playbook_ir.yml --tags="ssh_bruteforce" -e "attacker_ip=1.2.3.4"
+#
+# 2. COMPTE COMPROMIS admin-soc:
+#    ansible-playbook playbook_ir.yml --tags="user_compromise" -e "compromised_user=admin-soc"
+#
+# 3. WEB SHELL détecté:
+#    ansible-playbook playbook_ir.yml --tags="web_shell"
+#
+# 4. SCAN RÉSEAU depuis 5.6.7.8:
+#    ansible-playbook playbook_ir.yml --tags="network_scan" -e "attacker_ip=5.6.7.8"
+#
+# 5. COLLECTE FORENSIQUE complète:
+#    ansible-playbook playbook_ir.yml --tags="forensics"
+#
+# 6. PLUSIEURS SCÉNARIOS combinés:
+#    ansible-playbook playbook_ir.yml --tags="ssh_bruteforce,user_compromise" \
+#      -e "attacker_ip=1.2.3.4 compromised_user=admin-soc"
+#
+################################################################################

@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+=============================================================================
+CONFIGURATION ZONES FIREWALLD - MINI SOC ROCKY LINUX
+=============================================================================
+Ce fichier contient des exemples de zones firewalld personnalisées
+Chemin de déploiement: /etc/firewalld/zones/
+
+Commandes utiles:
+  sudo firewall-cmd --get-zones                    # Lister les zones
+  sudo firewall-cmd --get-active-zones             # Zones actives
+  sudo firewall-cmd --zone=public --list-all       # Détail d'une zone
+  sudo firewall-cmd --reload                       # Recharger config
+=============================================================================
+-->
+
+<!--
+=============================================================================
+ZONE 1: ZONE PUBLIC (Serveur Web exposé à Internet)
+=============================================================================
+Usage: Interface publique du serveur web
+Risque: ÉLEVÉ - Exposition Internet
+-->
+<zone>
+  <short>public-web</short>
+  <description>Zone publique pour serveur web exposé - Restrictions maximales</description>
+  
+  <!-- Services autorisés -->
+  <service name="http"/>      <!-- Port 80 -->
+  <service name="https"/>     <!-- Port 443 -->
+  <service name="ssh"/>       <!-- Port custom 2222 défini ailleurs -->
+  
+  <!-- Ports personnalisés (si nécessaires) -->
+  <!-- Port SSH custom -->
+  <port protocol="tcp" port="2222"/>
+  
+  <!-- Blocage par défaut -->
+  <target>default</target>
+  
+  <!-- Protection contre les scans -->
+  <rule family="ipv4">
+    <source address="0.0.0.0/0"/>
+    <limit value="10/m"/>
+    <accept/>
+  </rule>
+  
+  <!-- Log des connexions refusées -->
+  <rule>
+    <log prefix="PUBLIC-DROPPED: " level="info">
+      <limit value="5/m"/>
+    </log>
+    <drop/>
+  </rule>
+</zone>
+
+<!--
+=============================================================================
+ZONE 2: ZONE INTERNAL (SOC/SIEM et Monitoring)
+=============================================================================
+Usage: Communication interne entre VMs du SOC
+Risque: MOYEN - Réseau interne seulement
+-->
+<zone>
+  <short>internal-soc</short>
+  <description>Zone interne SOC - Communication entre VMs du lab</description>
+  
+  <!-- Services autorisés -->
+  <service name="ssh"/>
+  <service name="http"/>
+  <service name="https"/>
+  
+  <!-- Ports Wazuh -->
+  <port protocol="tcp" port="1514"/>  <!-- Wazuh agent registration -->
+  <port protocol="tcp" port="1515"/>  <!-- Wazuh agent communication -->
+  <port protocol="tcp" port="55000"/> <!-- Wazuh API -->
+  
+  <!-- Ports Elasticsearch (si utilisé) -->
+  <port protocol="tcp" port="9200"/>  <!-- Elasticsearch HTTP -->
+  <port protocol="tcp" port="9300"/>  <!-- Elasticsearch transport -->
+  
+  <!-- Ports Grafana -->
+  <port protocol="tcp" port="3000"/>  <!-- Grafana Web UI -->
+  
+  <!-- Ports Prometheus -->
+  <port protocol="tcp" port="9090"/>  <!-- Prometheus Web UI -->
+  <port protocol="tcp" port="9100"/>  <!-- Node Exporter -->
+  
+  <!-- Ports Zabbix (alternative) -->
+  <port protocol="tcp" port="10050"/> <!-- Zabbix agent -->
+  <port protocol="tcp" port="10051"/> <!-- Zabbix server -->
+  
+  <!-- Rsyslog/Syslog -->
+  <port protocol="tcp" port="514"/>
+  <port protocol="udp" port="514"/>
+  
+  <!-- Règle d'acceptation pour le réseau interne -->
+  <!-- ⚠️ À MODIFIER: Remplacer par votre subnet interne -->
+  <rule family="ipv4">
+    <source address="192.168.100.0/24"/>
+    <accept/>
+  </rule>
+  
+  <!-- Log et blocage du reste -->
+  <rule>
+    <log prefix="INTERNAL-DROPPED: " level="warning">
+      <limit value="3/m"/>
+    </log>
+    <drop/>
+  </rule>
+</zone>
+
+<!--
+=============================================================================
+ZONE 3: ZONE TRUSTED (Administration SOC uniquement)
+=============================================================================
+Usage: Accès administrateur depuis postes de confiance
+Risque: FAIBLE - IPs de confiance uniquement
+-->
+<zone>
+  <short>trusted-admin</short>
+  <description>Zone admin - Accès complet depuis IPs de confiance</description>
+  
+  <!-- Tous les services autorisés -->
+  <service name="ssh"/>
+  <service name="http"/>
+  <service name="https"/>
+  
+  <!-- IPs de confiance (postes admin) -->
+  <!-- ⚠️ À MODIFIER: Remplacer par les IPs de vos postes admin -->
+  <source address="192.168.100.10"/>  <!-- Poste admin 1 -->
+  <source address="192.168.100.11"/>  <!-- Poste admin 2 -->
+  <source address="192.168.100.12"/>  <!-- Poste admin 3 -->
+  
+  <!-- Accepter tout depuis ces IPs -->
+  <target>ACCEPT</target>
+</zone>
+
+<!--
+=============================================================================
+ZONE 4: ZONE DMILITARISÉE (DMZ pour services exposés)
+=============================================================================
+Usage: Zone démilitarisée pour services web
+Risque: ÉLEVÉ - Exposition contrôlée
+-->
+<zone>
+  <short>dmz-web</short>
+  <description>DMZ pour services web - Exposition limitée</description>
+  
+  <!-- Services exposés -->
+  <service name="http"/>
+  <service name="https"/>
+  
+  <!-- SSH depuis réseau admin uniquement -->
+  <rule family="ipv4">
+    <source address="192.168.100.0/24"/>
+    <service name="ssh"/>
+    <accept/>
+  </rule>
+  
+  <!-- Rate limiting sur HTTP/HTTPS -->
+  <rule family="ipv4">
+    <source address="0.0.0.0/0"/>
+    <service name="http"/>
+    <limit value="100/s"/>
+    <accept/>
+  </rule>
+  
+  <rule family="ipv4">
+    <source address="0.0.0.0/0"/>
+    <service name="https"/>
+    <limit value="100/s"/>
+    <accept/>
+  </rule>
+  
+  <!-- Log des tentatives suspectes -->
+  <rule>
+    <log prefix="DMZ-SUSPICIOUS: " level="warning">
+      <limit value="10/m"/>
+    </log>
+    <drop/>
+  </rule>
+</zone>
+
+<!--
+=============================================================================
+INSTRUCTIONS DE DÉPLOIEMENT
+=============================================================================
+
+1. Copier les zones dans /etc/firewalld/zones/
+   sudo cp firewalld_zones.xml /etc/firewalld/zones/
+
+2. Assigner une zone à une interface
+   sudo firewall-cmd --zone=internal-soc --change-interface=eth0 --permanent
+   
+3. Définir la zone par défaut
+   sudo firewall-cmd --set-default-zone=public-web
+
+4. Recharger la configuration
+   sudo firewall-cmd --reload
+
+5. Vérifier l'application
+   sudo firewall-cmd --get-active-zones
+   sudo firewall-cmd --list-all-zones
+
+=============================================================================
+RICH RULES ADDITIONNELLES (exemples)
+=============================================================================
+
+# Bloquer une IP spécifique
+sudo firewall-cmd --add-rich-rule='rule family="ipv4" source address="1.2.3.4" reject' --permanent
+
+# Autoriser SSH depuis une IP précise
+sudo firewall-cmd --add-rich-rule='rule family="ipv4" source address="10.0.0.5" service name="ssh" accept' --permanent
+
+# Rate limiting SSH
+sudo firewall-cmd --add-rich-rule='rule service name="ssh" limit value="5/m" accept' --permanent
+
+# Bloquer ping (ICMP)
+sudo firewall-cmd --add-icmp-block=echo-request --permanent
+
+# Autoriser ping depuis réseau interne seulement
+sudo firewall-cmd --add-rich-rule='rule family="ipv4" source address="192.168.100.0/24" icmp-type name="echo-request" accept' --permanent
+
+=============================================================================
+-->

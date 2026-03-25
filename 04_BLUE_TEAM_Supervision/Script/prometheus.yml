@@ -1,0 +1,231 @@
+# Prometheus Configuration
+# Fichier: /etc/prometheus/prometheus.yml
+# 
+# Ce fichier configure Prometheus pour :
+# - Scraper (collecter) les métriques des agents
+# - Évaluer les règles d'alerte
+# - Stocker les données TimeSeries
+#
+# Syntaxe: YAML (espaces = 2 espaces, pas de tabs)
+
+# =====================================================
+# SECTION 1 : Configuration globale
+# =====================================================
+
+global:
+  # Intervalle de scrape par défaut (si non spécifié dans scrape_configs)
+  scrape_interval: 15s
+  
+  # Intervalle d'évaluation des règles d'alerte
+  evaluation_interval: 15s
+  
+  # Labellisation externe (ajouté à chaque métrique)
+  external_labels:
+    monitor: 'rocky-soc'           # Identifier cet instance Prometheus
+    environment: 'production'      # Environnement (dev/prod/staging)
+    team: 'security'               # Équipe responsable
+
+# =====================================================
+# SECTION 2 : Configuration TimeSeries Database (TSDB)
+# =====================================================
+
+tsdb:
+  # Chemin de stockage des données
+  path: /var/lib/prometheus/
+  
+  # Rétention des données (optionnel)
+  # Par défaut : 15 jours
+  retention:
+    size: 50GB              # Limiter la taille totale
+    time: 30d               # Garder 30 jours de données
+
+# =====================================================
+# SECTION 3 : Règles d'alerte (optionnel pour v1)
+# =====================================================
+
+# rule_files:
+#   - "/etc/prometheus/alert_rules.yml"
+
+# =====================================================
+# SECTION 4 : Configuration AlertManager (optionnel)
+# =====================================================
+
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - localhost:9093
+
+# =====================================================
+# SECTION 5 : Scrape Configurations
+# =====================================================
+
+scrape_configs:
+
+  # =====================================================
+  # Target 1 : Prometheus lui-même
+  # =====================================================
+  - job_name: 'prometheus'
+    
+    # Scrape interval pour ce job (optionnel, sinon global)
+    scrape_interval: 15s
+    
+    # Configuration statique (targets fixes)
+    static_configs:
+      - targets: ['localhost:9090']
+    
+    # Labels additionnels pour ce job
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'prometheus-server'
+
+  # =====================================================
+  # Target 2 : VM1 (Serveur Web)
+  # =====================================================
+  - job_name: 'vm1-web'
+    
+    # Scrape plus fréquent pour application active
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    
+    static_configs:
+      - targets: ['10.0.0.5:9100']
+    
+    # Relabeling : renommer instance pour clarté
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'VM1-web'
+      
+      # Ajouter label serveur
+      - source_labels: []
+        target_label: server_role
+        replacement: 'web'
+      
+      # Ajouter label zone
+      - source_labels: []
+        target_label: zone
+        replacement: 'dmz'
+
+  # =====================================================
+  # Target 3 : VM2 (Serveur SOC)
+  # =====================================================
+  - job_name: 'vm2-soc'
+    
+    static_configs:
+      - targets: ['10.0.0.6:9100']
+    
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'VM2-soc'
+      
+      - source_labels: []
+        target_label: server_role
+        replacement: 'soc'
+      
+      - source_labels: []
+        target_label: zone
+        replacement: 'internal'
+
+  # =====================================================
+  # Target 4 : Wazuh Manager (optionnel, si exporter dispo)
+  # =====================================================
+  # - job_name: 'wazuh-manager'
+  #   
+  #   static_configs:
+  #     - targets: ['10.0.0.6:9100']
+  #   
+  #   # Seulement si Wazuh exporter installé
+  #   # relabel_configs:
+  #   #   - source_labels: [__address__]
+  #   #     target_label: instance
+  #   #     replacement: 'wazuh-vm2'
+
+  # =====================================================
+  # Target 5 : Nginx Web Server (optionnel)
+  # =====================================================
+  # - job_name: 'nginx-vm1'
+  #   
+  #   static_configs:
+  #     - targets: ['10.0.0.5:9113']
+  #   
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: instance
+  #       replacement: 'nginx-vm1'
+
+# =====================================================
+# NOTES DE CONFIGURATION
+# =====================================================
+
+# 1. ADRESSES IP
+#    ⚠️  Adapter ces adresses aux vraies IPs de vos VMs
+#    VM1 (Web) : remplacer 10.0.0.5 par vraie IP
+#    VM2 (SOC) : remplacer 10.0.0.6 par vraie IP
+
+# 2. PORTS
+#    Port 9090 : Prometheus API
+#    Port 9100 : Node Exporter (Node.js metrics)
+#    Port 9093 : AlertManager (si utilisé)
+#    Port 9113 : Nginx Exporter (si utilisé)
+
+# 3. SCRAPE INTERVAL vs EVALUATION INTERVAL
+#    - scrape_interval : Tous les 15 secondes, Prometheus demande les métriques
+#    - evaluation_interval : Tous les 15 secondes, Prometheus évalue les alertes
+
+# 4. RELABELING
+#    Permet de modifier les labels des métriques scrappées
+#    Utilisé pour clarifier noms hosts, ajouter contexte, filtrer
+
+# 5. RETENTION
+#    Par défaut : 15 jours de données
+#    À adapter selon stockage disponible
+
+# 6. LABELS
+#    external_labels : ajoutés à TOUTES les métriques (importante!)
+#    Utile pour identifier environment, team, cluster, etc.
+
+# =====================================================
+# COMMANDES UTILES
+# =====================================================
+
+# Tester syntaxe configuration
+# $ promtool check config /etc/prometheus/prometheus.yml
+
+# Afficher configuration chargée
+# $ curl http://localhost:9090/api/v1/status/config
+
+# Vérifier targets scrappées
+# $ curl http://localhost:9090/api/v1/targets
+
+# Recharger configuration sans redémarrer (signal HUP)
+# $ systemctl reload prometheus
+# Ou
+# $ curl -X POST http://localhost:9090/-/reload
+
+# =====================================================
+# DÉPANNAGE
+# =====================================================
+
+# Targets en RED (DOWN)
+# → Vérifier IPs, ports, firewall
+# → Vérifier services Node Exporter actifs
+# → Vérifier logs Prometheus : journalctl -u prometheus -f
+
+# Configuration refusée au restart
+# → Lancer : promtool check config prometheus.yml
+# → Vérifier syntaxe YAML (indentation!)
+# → Vérifier que fichiers référencés existent
+
+# Prometheus ne scrape pas
+# → Vérifier "global > scrape_interval"
+# → Vérifier connectivité réseau
+# → Vérifier firewall ouvre ports
+
+# =====================================================
+# POUR PLUS D'INFOS
+# =====================================================
+# Documentation officielle Prometheus
+# https://prometheus.io/docs/prometheus/latest/configuration/configuration/
