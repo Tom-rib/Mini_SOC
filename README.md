@@ -1,6 +1,6 @@
 # 🛡️ Mini SOC Sécurisé sous Rocky Linux
 
-> **Infrastructure d'entreprise protégée par une équipe Blue Team | Projet pédagogique BTS/Licence**
+> **Infrastructure d'entreprise simulée protégée par une équipe Blue Team | Projet pédagogique complet**
 
 ![Version](https://img.shields.io/badge/version-2.0-blue)
 ![Status](https://img.shields.io/badge/status-Active-green)
@@ -9,95 +9,151 @@
 
 ---
 
-## 📖 À propos de ce projet
+## 📖 Vue d'ensemble
 
-Ce projet simule une **infrastructure d'entreprise réelle** protégée par une équipe SOC (Security Operations Center) travaillant en **Blue Team**.
+Ce projet simule une **infrastructure d'entreprise réelle** protégée par une équipe SOC (Security Operations Center). Vous incarnerez une équipe Blue Team chargée de **sécuriser, surveiller, détecter et réagir aux attaques**.
 
-### Votre mission
-Vous incarnez une équipe SOC chargée de :
+### 🎯 Votre mission
 - 🔒 **Sécuriser** les systèmes (hardening, firewall, audit)
-- 👀 **Surveiller** les activités (logs, SIEM, monitoring)
-- 🚨 **Détecter** les attaques (règles personnalisées, IDS)
-- ⚡ **Réagir** aux incidents (playbooks IR, automatisation)
+- 👀 **Surveiller** les activités en temps réel (logs, SIEM, monitoring)
+- 🚨 **Détecter** les attaques automatiquement (règles, IDS)
+- ⚡ **Réagir** aux incidents (playbooks, automatisation)
 
-### Pourquoi Rocky Linux ?
-**Rocky Linux** est un clone gratuit et entreprise de **RHEL** (Red Hat Enterprise Linux), très utilisé dans le secteur professionnel. Vous maîtriserez ainsi un OS réaliste.
-
----
-
-## 🎯 Objectifs pédagogiques
-
-À la fin de ce projet, vous saurez :
-
-| Compétence | Détail |
-|-----------|--------|
-| **Linux entreprise** | Installation, partitionnement, gestion système |
-| **Sécurité système** | Hardening, SELinux, firewall, SSH, audit |
-| **Blue Team / SOC** | Logs centralisés, SIEM (Wazuh), détection |
-| **Incident Response** | Règles personnalisées, playbooks, automatisation |
-| **Monitoring** | Supervision avec Zabbix/Prometheus, alertes |
-| **Travail en équipe** | Rôles distincts mais complémentaires |
+### ⏱️ Durée et niveau
+- **Durée** : 6 semaines
+- **Niveau** : 2e année admin/réseaux
+- **Format** : Travail en équipe (3 rôles spécialisés)
 
 ---
 
-## 🏗️ Architecture générale
+## 🏗️ Architecture de l'infrastructure
 
 ```
-┌─────────────────────────────────────────┐
-│   INTERNET / ATTAQUANT (Red Team)       │
-└────────────────────┬────────────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────┐
-        │  Firewall Rocky Linux   │ ← Bloque/filtre
-        └────────────┬────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────┐
-        │ Serveur Web Rocky Linux │ ← Cible exposée
-        │  (Nginx)                │
-        └────────────┬────────────┘
-                     │
-        Logs & Alertes (rsyslog/Filebeat)
-                     │
-                     ▼
-        ┌─────────────────────────┐
-        │  SOC / Wazuh (SIEM)     │ ← Détection
-        │  Centralisation logs    │
-        └────────────┬────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────┐
-        │  Monitoring & IR        │ ← Réaction
-        │  (Zabbix/Prometheus)    │
-        └─────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  INTERNET / ATTAQUANTS (Red Team ou tests)              │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                 [FIREWALL]
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+   ┌────▼────┐   ┌────▼────┐   ┌───▼─────┐
+   │  VM 1   │   │  VM 2   │   │  VM 3   │
+   │ Serveur │   │   SOC   │   │ Monitor │
+   │  Web    │◄──┤  Wazuh  │◄──┤ Grafana │
+   └────┬────┘   └────┬────┘   └─────────┘
+        │             │
+        └─────────────┘
+     (Logs & Alertes)
 ```
 
-### Machines virtuelles nécessaires
-- **VM1** : Serveur web Rocky Linux (cible exposée)
-- **VM2** : SOC / Wazuh / Logs (détection centralisée)
-- **VM3** : Monitoring / Incident Response (supervision & réaction)
-- **VM4 (optionnel)** : Machine attaquante Kali Linux (Red Team)
+### 🖥️ Description des machines
+
+| VM | Hostname | IP | Rôle | Outils principaux |
+|---|----------|-------|------|-------------------|
+| **VM1** | soc-web-rocky | 192.168.1.10 | Serveur Web (cible) | Nginx, SSH, Fail2ban, Auditd |
+| **VM2** | soc-siem-rocky | 192.168.1.20 | SOC / Détection | Wazuh Manager, Elasticsearch |
+| **VM3** | soc-monitor-rocky | 192.168.1.30 | Monitoring / IR | Prometheus, Grafana, Node Exporter |
 
 ---
 
-## 👥 Les 3 rôles et équipes
+## 📂 Structure du dépôt
 
-Chaque personne a une mission bien définie :
+```
+Mini_SOC/
+├── 📖 01_Preparation/              ← Lire EN PREMIER (contexte & objectifs)
+│   ├── 01_contexte_objectifs.md
+│   ├── 02_architecture_schema.md
+│   ├── 03_roles_equipes.md
+│   ├── 04_prerequis.md
+│   └── 05_timeline.md
+│
+├── 🔒 02_ADMIN_Hardening/          ← RÔLE 1 : Sécuriser les systèmes
+│   ├── 01_installation_base.md
+│   ├── 02_partitionnement.md
+│   ├── 03_config_reseau.md
+│   ├── 04_comptes_acces.md
+│   ├── 05_ssh_hardening.md
+│   ├── 06_firewall.md
+│   ├── 07_selinux.md
+│   ├── 08_fail2ban.md
+│   ├── 09_auditd.md
+│   └── 10_lynis.md
+│
+├── 🔵 03_BLUE_TEAM_SOC/            ← RÔLE 2 : Détecter les attaques
+│   ├── 04_wazuh_architecture.md
+│   ├── 05_wazuh_manager_install.md
+│   ├── 06_wazuh_agents_install.md
+│   ├── 07_wazuh_integration.md
+│   ├── 08_wazuh_interface.md
+│   ├── 09_regles_syntax.md
+│   ├── 10_detection_bruteforce_ssh.md
+│   ├── 11_detection_sudo.md
+│   ├── 12_detection_nmap.md
+│   ├── 13_detection_uploads.md
+│   └── 14_detection_horaires.md
+│
+├── 📊 04_BLUE_TEAM_Supervision/    ← RÔLE 3 : Surveiller & Réagir
+│   ├── 01_choix_outil.md
+│   ├── 02_install_monitoring.md
+│   ├── 03_metriques_surveillance.md
+│   ├── 04_dashboards.md
+│   ├── 05_configuration_alertes.md
+│   ├── 06_seuils_baselines.md
+│   ├── 07_integration_wazuh.md
+│   ├── 08_procedures_ir.md
+│   ├── 09_playbooks_ir.md
+│   ├── 10_scripts_automatises.md
+│   └── CHEATSHEET.md
+│
+├── 🔴 05_RED_TEAM_Attaques/       ← Attaques à détecter
+│   ├── 01_nmap.md
+│   ├── 02_bruteforce_ssh.md
+│   ├── 03_upload_malveillant.md
+│   ├── 04_elevation_privileges.md
+│   ├── 05_connexion_hors_horaires.md
+│   ├── 06_web_shells.md
+│   ├── 07_cve.md
+│   └── 08_lateral_movement.md
+│
+├── 📚 06_Annexes/                  ← Ressources & configurations
+│   ├── ansible/                    ← Playbooks automatisation
+│   ├── configs/                    ← Fichiers de configuration
+│   ├── memos/                      ← Mémos rapides Linux/SSH/etc
+│   ├── scripts/                    ← Scripts utilitaires
+│   └── wazuh_rules/                ← Règles Wazuh personnalisées
+│
+└── ⚡ 07_Installation_Script/       ← Scripts d'installation automatisée
+    ├── INSTALLATION_COMPLETE_GUIDE.md
+    ├── vm1_install.sh
+    ├── vm2_install.sh
+    ├── vm3_install.sh
+    ├── VM1_README.md
+    ├── VM2_README.md
+    └── VM3_README.md
+```
 
-### 👨‍💻 **Rôle 1 : Administrateur Système & Hardening**
+---
+
+## 👥 Les 3 rôles et responsabilités
+
+Chaque personne/équipe a une mission bien définie et travaille sur une VM spécifique.
+
+### 👨‍💻 **Rôle 1 : Administrateur Système & Hardening** → [Voir 02_ADMIN_Hardening/](02_ADMIN_Hardening/)
 **Mission** : Rendre les serveurs difficiles à compromettre  
-**Quand** : *Avant* les attaques (prévention)
+**Responsable de** : VM1  
+**Phase** : AVANT les attaques (prévention)
 
-- Installation de Rocky Linux (minimale, sécurisée)
-- Partitionnement + configuration réseau
-- Sécurisation SSH (clés, port custom, timeout)
-- Firewall (firewalld) avec zones
-- SELinux en mode enforcing
-- Fail2ban pour protection brute force
-- Auditd pour traçabilité complète
+✅ Installation Rocky Linux minimal et sécurisé  
+✅ Partitionnement + configuration réseau  
+✅ SSH hardening (clés, port custom, timeouts)  
+✅ Firewall (firewalld) avec zones et règles  
+✅ SELinux en mode enforcing  
+✅ Fail2ban pour protection brute force  
+✅ Auditd pour traçabilité complète  
+✅ Checklist Lynis et rapport de sécurité
 
-**Livrables** : Checklist hardening, rapport Lynis, justifications
+**Livrables** : VM1 sécurisée, rapport Lynis, documentation
 
 ---
 
@@ -161,7 +217,6 @@ Chaque personne a une mission bien définie :
 │   ├── 08_fail2ban.md
 │   ├── 09_auditd.md
 │   ├── 10_lynis.md
-│   ├── LIVRABLES.md
 │   └── 🧪 tests_verification.md
 │
 ├── 📁 03_BLUE_TEAM_SOC/                # Rôle 2 : SOC / Détection
